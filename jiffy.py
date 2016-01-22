@@ -36,20 +36,23 @@ class Jiffy(object):
             reader = csv.DictReader(csvfile, delimiter=',')
             for row in reader:
                 # Parse the data from the row
-                customer = row['Customer']
-                project = row['Project']
+                customer, relation = ([s.strip() for s in row['Customer'].split('/', 1)] + [''])[:2]
+                project = row['Project'].strip()
+                task = re.sub('\s+\d+$', '', row['Task']).strip()
                 start = datetime.datetime.strptime(row['Start time'], '%Y-%m-%d %H:%M:%S')
                 end = datetime.datetime.strptime(row['Stop time'], '%Y-%m-%d %H:%M:%S')
                 _, week, day = start.isocalendar()
                 minutes = int(row['Minutes'])
+                note = row['Note'].strip()
 
                 # Store the parsed data
                 self._worked[customer][week][day].append({
                     'start': start,
                     'end': end,
+                    'relation': relation,
                     'project': project,
-                    'task': re.sub('\s+\d+$', '', row['Task']),
-                    'note': row['Note'],
+                    'task': task,
+                    'note': note,
                     'minutes': minutes
                 })
 
@@ -126,30 +129,37 @@ class Jiffy(object):
             return "\r\n\r\n".join([self._with_title(self.generate_projectlog, week, c) for c in self.get_customers()])
 
         # Determine the worked hours per task.
-        worked = collections.defaultdict( # Project
-            lambda: collections.defaultdict( # Task
-                lambda: collections.defaultdict( # Day
-                    lambda: 0 # Minutes
+        worked = collections.defaultdict( # Relation
+            lambda: collections.defaultdict( # Project
+                lambda: collections.defaultdict( # Task
+                    lambda: collections.defaultdict( # Day
+                        lambda: 0 # Minutes
+                    )
                 )
             )
         )
         work = self._worked[customer][week]
         for day in range(1, 8):
             for task in work[day]:
-                worked[task['project']][task['task']][day] += task['minutes']
+                worked[task['relation']][task['project']][task['task']][day] += task['minutes']
 
         # Generate project log
         itemses = []
         itemses.append(['What', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun', 'Total'])
-        for project, pwork in sitems(worked):
+        for relation, rwork in sitems(worked):
             itemses.append(['----------'])
-            itemses.append([project])
-            for task, twork in sitems(pwork):
-                items = [task]
-                for day in range(1, 8):
-                    items.append(twork[day])
-                items.append(sum(items[1:]))
-                itemses.append(items)
+            indent = ''
+            if relation:
+                itemses.append([relation])
+                indent = ' '
+            for project, pwork in sitems(rwork):
+                itemses.append([indent + project])
+                for task, twork in sitems(pwork):
+                    items = [indent + ' ' + task]
+                    for day in range(1, 8):
+                        items.append(twork[day])
+                    items.append(sum(items[1:]))
+                    itemses.append(items)
 
         # Calculate the totals.
         itemses.append(['----------'])
@@ -200,7 +210,7 @@ class Jiffy(object):
         output = ''
         customer_work = self._worked[customer]
         itemses = []
-        itemses.append(['Date', 'Start', 'End', 'Duration', 'Project', 'Task', 'Note'])
+        itemses.append(['Date', 'Start', 'End', 'Duration', 'Relation', 'Project', 'Task', 'Note'])
         for week, work in sitems(customer_work):
             for day in range(1, 8):
                 for task in work[day]:
@@ -209,6 +219,7 @@ class Jiffy(object):
                         task['start'].strftime("%H:%M"),
                         task['end'].strftime("%H:%M"),
                         "{:02}:{:02}".format(int(task['minutes'] / 60), task['minutes'] % 60),
+                        task['relation'],
                         task['project'],
                         task['task'],
                         task['note'],
@@ -217,6 +228,7 @@ class Jiffy(object):
         for items in itemses:
             for i, item in enumerate(items):
                 lengths[i] = max(lengths[i], len(str(item)) + 2)
+        lengths[-1] = 0
         for items in itemses:
             for i, item in enumerate(items):
                 output += "{1:<{0}} ".format(lengths[i], item)
@@ -244,6 +256,7 @@ class Jiffy(object):
                     yield {
                         'start': task['start'].timestamp(),
                         'end': task['end'].timestamp(),
+                        'relation': task['relation'],
                         'project': task['project'],
                         'task': task['task'],
                         'note': task['note'],
@@ -254,8 +267,8 @@ if __name__ == '__main__':
     # Read the jiffy files specified as arguments, and generate detailed,
     # per-customer log of these
     for infile in sys.argv[1:]:
-        if not infile.endswith('.csv'):
-            print("Ignoring file {} as it is not a csv file.".format(infile))
+        if not infile.endswith('jiffy.csv'):
+            print("Ignoring file {} as it is not a jiffy.csv file.".format(infile))
             continue
 
         # Read the input file
@@ -283,10 +296,21 @@ if __name__ == '__main__':
                 f.write("=== Details ===\r\n")
                 f.write(jiffy.generate_details(customer).strip())
 
-        # Generate a file with the raw data for each customer
+        # Generate files with the raw data for each customer
         for customer in jiffy.get_customers():
             with open(infile + '.{}.json'.format(customer), 'w') as f:
                 f.write(json.dumps(list(jiffy.generate_export(customer))))
+            with open(infile + '.{}.csv'.format(customer), 'w') as f:
+                f.write("starts_at;ends_at;relation;order;sub_order;description\r\n")
+                for line in jiffy.generate_export(customer):
+                    f.write("{start};{end};{relation};{project};{task};{note}\r\n".format(
+                        start=datetime.datetime.fromtimestamp(line['start']).isoformat(),
+                        end=datetime.datetime.fromtimestamp(line['end']).isoformat(),
+                        relation=line['relation'],
+                        project=line['project'],
+                        task=line['task'],
+                        note=line['note'],
+                    ))
 
         # Remove the input file.
         os.remove(infile)
