@@ -1,0 +1,1 @@
+#space::SendInput ^+{F15}
